@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+sentence-transformers
+torch
+numpy
+gigachat
+python-dotenv
