@@ -97,10 +97,131 @@ def retrieve(query: str, k: int = 3) -> List[Tuple[str, float]]:
 
 
 def add_fact(fact_text: str) -> None:
-    with KB_FILE.open("a", encoding="utf-8") as f:
-        f.write("\n//\n")
-        f.write(fact_text.strip() + "\n")
-    
+    """
+    Add a fact to knowledge_ru.txt with simple topic detection.
+
+    Rules used:
+    - If fact starts with `[topic]` -> create a new topic section with that name.
+    - Else, if any existing topic name appears in the fact (case-insensitive substring) -> append the fact under that topic.
+    - Else, if fact contains a short "Topic: description" (left of first ':' is short) -> create a new topic with that name.
+    - Otherwise append the fact to the `[Разное]` section (create it if missing).
+
+    After update reload knowledge and (optionally) rebuild embeddings.
+    """
+    s = fact_text.strip()
+    raw = KB_FILE.read_text(encoding="utf-8")
+
+    # Parse existing sections: split on lines with only // as separator
+    parts = [p.strip() for p in raw.split("//") if p.strip()]
+    sections = []  # list of (header, list_of_lines)
+    for p in parts:
+        lines = [l.rstrip() for l in p.splitlines() if l.strip()]
+        if not lines:
+            continue
+        # header if first line like [topic]
+        first = lines[0]
+        if first.startswith("[") and "]" in first:
+            header = first
+            body = lines[1:]
+        else:
+            header = None
+            body = lines
+        sections.append((header, body))
+
+    # collect topic names
+    topics = []
+    for hdr, _ in sections:
+        if hdr and hdr.startswith("[") and hdr.endswith("]"):
+            topics.append(hdr[1:-1])
+
+    lower_s = s.lower()
+
+    # 1) explicit [topic] at start
+    import re
+    m = re.match(r"^\s*\[(.+?)\]\s*(.*)$", s, flags=re.DOTALL)
+    if m:
+        topic = m.group(1).strip()
+        content = m.group(2).strip()
+        # create new section with header [topic]
+        new_lines = []
+        if content:
+            for line in content.splitlines():
+                if line.strip():
+                    new_lines.append("-" + line.strip())
+        sections.append((f"[{topic}]", new_lines))
+        # write back
+        out = []
+        for hdr, body in sections:
+            if hdr:
+                out.append(hdr)
+            out.extend(body)
+            out.append("//")
+        KB_FILE.write_text("\n".join(out).strip()+"\n", encoding="utf-8")
+        load_knowledge(rebuild_embeddings=True)
+        return
+
+    # 2) match existing topic names inside text
+    matched_topic = None
+    for t in topics:
+        if t.lower() in lower_s:
+            matched_topic = t
+            break
+
+    if matched_topic:
+        # append as a '-fact' to that topic
+        new_sections = []
+        for hdr, body in sections:
+            if hdr and hdr.startswith("[") and hdr.endswith("]") and hdr[1:-1] == matched_topic:
+                body = body + ["-" + s]
+            new_sections.append((hdr, body))
+        # write
+        out = []
+        for hdr, body in new_sections:
+            if hdr:
+                out.append(hdr)
+            out.extend(body)
+            out.append("//")
+        KB_FILE.write_text("\n".join(out).strip()+"\n", encoding="utf-8")
+        load_knowledge(rebuild_embeddings=True)
+        return
+
+    # 3) check for 'Topic: description' pattern
+    if ":" in s:
+        left, right = s.split(":", 1)
+        if 1 <= len(left.strip()) <= 60 and len(right.strip()) > 0 and " " not in left.strip()[:2]:
+            # treat left as topic name
+            topic = left.strip()
+            content = right.strip()
+            new_lines = ["-" + content]
+            sections.append((f"[{topic}]", new_lines))
+            out = []
+            for hdr, body in sections:
+                if hdr:
+                    out.append(hdr)
+                out.extend(body)
+                out.append("//")
+            KB_FILE.write_text("\n".join(out).strip()+"\n", encoding="utf-8")
+            load_knowledge(rebuild_embeddings=True)
+            return
+
+    # 4) otherwise add to Разное
+    found = False
+    new_sections = []
+    for hdr, body in sections:
+        if hdr and hdr.startswith("[") and hdr.endswith("]") and hdr[1:-1].lower() == "разное":
+            body = body + ["-" + s]
+            found = True
+        new_sections.append((hdr, body))
+    if not found:
+        new_sections.append(("[Разное]", ["-" + s]))
+
+    out = []
+    for hdr, body in new_sections:
+        if hdr:
+            out.append(hdr)
+        out.extend(body)
+        out.append("//")
+    KB_FILE.write_text("\n".join(out).strip()+"\n", encoding="utf-8")
     load_knowledge(rebuild_embeddings=True)
 
 try:
